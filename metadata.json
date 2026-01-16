@@ -1,0 +1,5 @@
+{
+  "name": "EPI Tools",
+  "description": "Critical care resource for Emergency Physicians. Features dark-mode mobile-first interface, advanced resuscitation trackers, comprehensive pediatric calculators, and DOH antimicrobial guidelines.",
+  "requestFramePermissions": []
+}
