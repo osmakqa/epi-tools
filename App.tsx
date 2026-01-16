@@ -33,6 +33,7 @@ const App: React.FC = () => {
   const [activeModule, setActiveModule] = useState<ModuleType>(ModuleType.HOME);
   const [deepLinkSubId, setDeepLinkSubId] = useState<string | undefined>(undefined);
   const [pdfConfig, setPdfConfig] = useState<{ url: string; title: string; returnModule: ModuleType } | null>(null);
+  const [showInfo, setShowInfo] = useState(false);
 
   const handleNavigate = (module: ModuleType, subId?: string) => {
     setActiveModule(module);
@@ -45,6 +46,32 @@ const App: React.FC = () => {
   };
 
   const resetDeepLink = () => setDeepLinkSubId(undefined);
+
+  const renderInfoModal = () => (
+    <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
+      <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-[40px] p-8 shadow-2xl animate-in zoom-in-95 duration-200 text-center space-y-6">
+        <div className="w-20 h-20 bg-blue-600/10 rounded-3xl flex items-center justify-center mx-auto text-blue-500 text-4xl">
+           <i className="fas fa-microchip"></i>
+        </div>
+        <div>
+          <h2 className="text-2xl font-black text-white uppercase tracking-tighter">EPI <span className="text-blue-500 italic">Tools</span></h2>
+          <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mt-1">Version 1.0.0 (Global Build)</p>
+        </div>
+        <div className="space-y-2 py-4 border-y border-slate-800/50">
+          <p className="text-xs font-bold text-slate-400 leading-relaxed uppercase tracking-tight">Support & Feedback</p>
+          <a href="mailto:maxterrenal@gmail.com" className="block w-full py-3 bg-slate-800 rounded-2xl text-blue-400 font-black text-sm hover:bg-slate-750 transition-colors">
+            maxterrenal@gmail.com
+          </a>
+        </div>
+        <button 
+          onClick={() => setShowInfo(false)}
+          className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl uppercase text-xs tracking-widest shadow-xl shadow-blue-600/20 active:scale-95 transition-all"
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
 
   const renderHistory = () => {
     const history: CodeSession[] = JSON.parse(localStorage.getItem('code_history') || '[]');
@@ -158,6 +185,9 @@ const App: React.FC = () => {
           <p className="text-slate-500 font-bold text-[10px] uppercase tracking-[0.2em] mt-2">EMED resource portal v1.0</p>
         </div>
         <div className="flex gap-2">
+          <button onClick={() => setShowInfo(true)} className="w-10 h-10 bg-slate-900/40 border border-slate-800/50 rounded-full flex items-center justify-center text-slate-600 active:bg-slate-800 md:w-12 md:h-12 hover:text-blue-500 transition-colors">
+            <i className="fas fa-info-circle md:text-xl"></i>
+          </button>
           <button onClick={() => setActiveModule(ModuleType.SEARCH)} className="w-10 h-10 bg-slate-900 border border-slate-800 rounded-full flex items-center justify-center text-blue-500 active:bg-slate-800 shadow-lg md:w-12 md:h-12">
             <i className="fas fa-search md:text-xl"></i>
           </button>
@@ -215,10 +245,16 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-950 max-w-md mx-auto relative flex flex-col ring-1 ring-slate-800 shadow-2xl overflow-hidden md:max-w-none md:mx-0 md:flex-row md:ring-0">
       
+      {/* INFO MODAL OVERLAY */}
+      {showInfo && renderInfoModal()}
+
       {/* DESKTOP SIDEBAR */}
       <aside className="hidden md:flex flex-col w-72 bg-slate-900 border-r border-slate-800 z-50">
         <div className="p-8 border-b border-slate-800">
-           <h2 className="text-2xl font-black text-white tracking-tighter uppercase">EPI <span className="text-blue-500 italic">Tools</span></h2>
+           <div className="flex justify-between items-start">
+             <h2 className="text-2xl font-black text-white tracking-tighter uppercase">EPI <span className="text-blue-500 italic">Tools</span></h2>
+             <button onClick={() => setShowInfo(true)} className="text-slate-600 hover:text-blue-500 transition-colors"><i className="fas fa-info-circle"></i></button>
+           </div>
            <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mt-1">Web Workstation v1.0</p>
         </div>
         <nav className="flex-1 overflow-y-auto py-6 px-4 space-y-2 no-scrollbar">
