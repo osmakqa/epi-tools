@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AntimicrobialGuideEntry } from '../types';
+import { ANTIMICROBIAL_DATA } from '../data/AntimicrobialData';
 
 interface Props {
   initialSearch?: string;
@@ -7,77 +8,17 @@ interface Props {
 }
 
 const AntimicrobialGuide: React.FC<Props> = ({ initialSearch, onDeepLinkUsed }) => {
-  const [data, setData] = useState<AntimicrobialGuideEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<AntimicrobialGuideEntry[]>(ANTIMICROBIAL_DATA);
+  const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedSystem, setSelectedSystem] = useState<string | null>(null);
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        const response = await fetch('data/AntimicrobialData.csv');
-        if (!response.ok) throw new Error('Failed to load CSV');
-        const text = await response.text();
-        const parsed = parseCSV(text);
-        setData(parsed);
-        setError(null);
-      } catch (err) {
-        console.error(err);
-        setError('Guidelines could not be loaded.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, []);
-
-  useEffect(() => {
-    if (initialSearch && !loading) {
+    if (initialSearch) {
       setSearch(initialSearch);
       onDeepLinkUsed?.();
     }
-  }, [initialSearch, loading]);
-
-  const parseCSV = (csvText: string): AntimicrobialGuideEntry[] => {
-    const lines = csvText.split(/\r?\n/).filter(line => line.trim() !== "");
-    if (lines.length === 0) return [];
-
-    const rows = lines.slice(1).map(line => {
-      const result = [];
-      let curValue = "";
-      let insideQuote = false;
-      for (let i = 0; i < line.length; i++) {
-        const char = line[i];
-        if (char === '"') {
-          insideQuote = !insideQuote;
-        } else if (char === "," && !insideQuote) {
-          result.push(curValue.trim());
-          curValue = "";
-        } else {
-          curValue += char;
-        }
-      }
-      result.push(curValue.trim());
-      return result;
-    });
-
-    return rows.map(row => ({
-      system: row[0] || "Unknown",
-      disease: row[1] || "Unknown",
-      pediatric: (row[2] || row[3]) ? {
-        firstLine: row[2]?.replace(/^"|"$/g, '') || "",
-        secondLine: row[3]?.replace(/^"|"$/g, '') || ""
-      } : undefined,
-      adult: (row[4] || row[5]) ? {
-        firstLine: row[4]?.replace(/^"|"$/g, '') || "",
-        secondLine: row[5]?.replace(/^"|"$/g, '') || ""
-      } : undefined,
-      remarks: row[6]?.replace(/^"|"$/g, '') || ""
-    }));
-  };
+  }, [initialSearch]);
 
   const filteredItems = data.filter(item => 
     item.disease.toLowerCase().includes(search.toLowerCase()) || 
@@ -92,16 +33,6 @@ const AntimicrobialGuide: React.FC<Props> = ({ initialSearch, onDeepLinkUsed }) 
       <div className="flex flex-col items-center justify-center h-full bg-slate-950 text-slate-500">
         <div className="w-12 h-12 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin mb-4"></div>
         <p className="font-black text-xs uppercase tracking-widest animate-pulse">Loading Guidelines...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-10 flex flex-col items-center justify-center h-full bg-slate-950 text-center">
-        <i className="fas fa-exclamation-triangle text-red-500 text-4xl mb-4"></i>
-        <h3 className="text-white font-black uppercase mb-2">Error</h3>
-        <p className="text-slate-500 text-sm font-medium">{error}</p>
       </div>
     );
   }
