@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ModuleType, CodeSession } from './types';
 import CodeBlueTracker from './components/CodeBlueTracker';
 import PediatricCalculator from './components/PediatricCalculator';
@@ -9,6 +9,8 @@ import GlobalSearch from './components/GlobalSearch';
 import ATLSGuide from './components/ATLSGuide';
 import RSIGuide from './components/RSIGuide';
 import PdfViewer from './components/PdfViewer';
+import { db } from './firebase';
+import { collection, query, orderBy, onSnapshot, doc, deleteDoc, updateDoc } from 'firebase/firestore';
 
 const ACLS_RESOURCES = [
   { title: 'Cardiac Arrest Algorithm', url: 'https://maxterrenal-hash.github.io/justculture/Adult%20Cardiac%20Arrest%20Algo.pdf' },
@@ -34,6 +36,27 @@ const App: React.FC = () => {
   const [deepLinkSubId, setDeepLinkSubId] = useState<string | undefined>(undefined);
   const [pdfConfig, setPdfConfig] = useState<{ url: string; title: string; returnModule: ModuleType } | null>(null);
   const [showInfo, setShowInfo] = useState(false);
+  const [history, setHistory] = useState<any[]>([]); 
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  useEffect(() => {
+    if (activeModule === ModuleType.HISTORY) {
+      setLoadingHistory(true);
+      const q = query(collection(db, 'code_history'), orderBy('startTime', 'desc'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const historyData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as any[];
+        setHistory(historyData);
+        setLoadingHistory(false);
+      }, (error) => {
+        console.error("Firestore error: ", error);
+        setLoadingHistory(false);
+      });
+      return () => unsubscribe();
+    }
+  }, [activeModule]);
 
   const handleNavigate = (module: ModuleType, subId?: string) => {
     setActiveModule(module);
@@ -46,6 +69,35 @@ const App: React.FC = () => {
   };
 
   const resetDeepLink = () => setDeepLinkSubId(undefined);
+
+  const handleDeleteEntry = async (id: string) => {
+    if (window.confirm("Are you sure you want to delete this session?")) {
+      try {
+        await deleteDoc(doc(db, 'code_history', id));
+      } catch (error) {
+        console.error("Delete error: ", error);
+        alert("Failed to delete entry.");
+      }
+    }
+  };
+
+  const handleDeleteLogEntry = async (sessionId: string, logIndex: number) => {
+    const session = history.find(s => s.id === sessionId);
+    if (!session) return;
+
+    if (window.confirm("Delete this log entry?")) {
+      const updatedLogs = [...session.logs];
+      updatedLogs.splice(logIndex, 1);
+      
+      try {
+        const sessionRef = doc(db, 'code_history', sessionId);
+        await updateDoc(sessionRef, { logs: updatedLogs });
+      } catch (error) {
+        console.error("Error updating logs:", error);
+        alert("Failed to delete log entry.");
+      }
+    }
+  };
 
   const renderInfoModal = () => (
     <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-6 animate-in fade-in duration-300">
@@ -74,32 +126,86 @@ const App: React.FC = () => {
   );
 
   const renderHistory = () => {
-    const history: CodeSession[] = JSON.parse(localStorage.getItem('code_history') || '[]');
     return (
       <div className="flex flex-col h-full bg-slate-950">
         <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900">
-          <h2 className="text-xl font-black text-slate-200 uppercase tracking-tight">Code History</h2>
+          <h2 className="text-xl font-black text-slate-200 uppercase tracking-tight">Cloud History</h2>
           <button onClick={() => setActiveModule(ModuleType.HOME)} className="p-2 text-slate-400"><i className="fas fa-times"></i></button>
         </div>
         <div className="p-4 overflow-y-auto space-y-3 pb-24 md:grid md:grid-cols-2 md:gap-4 md:space-y-0">
-          {history.map(h => (
-            <div key={h.id} className="bg-slate-900 border border-slate-800 p-4 rounded-2xl h-fit">
-              <div className="flex justify-between items-center mb-2">
-                <span className="bg-red-600 text-[10px] font-black px-2 py-0.5 rounded text-white uppercase">{h.type}</span>
-                <span className="text-xs text-slate-500 font-mono">{new Date(h.startTime).toLocaleDateString()}</span>
-              </div>
-              <p className="text-lg font-black text-slate-200">{h.duration}</p>
-              <details className="mt-2 group">
-                <summary className="text-[10px] font-bold text-slate-500 uppercase cursor-pointer group-open:mb-2">View Full Log</summary>
-                <div className="space-y-1 pl-2 border-l border-slate-800">
-                  {h.logs.map((l, i) => (
-                    <p key={i} className="text-[10px] font-mono text-slate-400">[{l.timestamp}] {l.action} {l.details ? `- ${l.details}` : ''}</p>
-                  ))}
-                </div>
-              </details>
+          {loadingHistory ? (
+            <div className="col-span-2 py-20 text-center flex flex-col items-center">
+               <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+               <p className="text-[10px] font-black uppercase text-slate-600">Syncing with cloud...</p>
             </div>
-          ))}
-          {history.length === 0 && <p className="text-center text-slate-600 py-20 uppercase font-black text-[10px] tracking-widest col-span-2">No saved codes.</p>}
+          ) : history.map(h => {
+            const start = h.startTime ? new Date(h.startTime) : null;
+            const stop = h.stopTime ? new Date(h.stopTime) : null;
+            return (
+              <div key={h.id} className="bg-slate-900 border border-slate-800 p-5 rounded-[32px] h-fit relative group shadow-xl">
+                <div className="flex justify-between items-center mb-4">
+                  <span className="bg-red-600 text-[10px] font-black px-2 py-1 rounded text-white uppercase tracking-widest">{h.type}</span>
+                  <span className="text-[10px] text-slate-500 font-black uppercase tracking-widest">
+                    {start?.toLocaleDateString() || "--"}
+                  </span>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-y-3 mb-4">
+                   <div>
+                     <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Duration</p>
+                     <p className="text-lg font-black text-slate-200">{h.duration || h.totalMinutes + 'm'}</p>
+                   </div>
+                   <div>
+                     <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Final Rhythm</p>
+                     <p className="text-sm font-black text-emerald-500 truncate">{h.finalRhythm || "--"}</p>
+                   </div>
+                   <div>
+                     <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Start / Stop</p>
+                     <p className="text-[10px] font-bold text-slate-400">
+                        {start?.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) || "--"} - {stop?.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) || "--"}
+                     </p>
+                   </div>
+                   <div>
+                     <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Epi / Shocks</p>
+                     <p className="text-[10px] font-bold text-slate-400">
+                        Epi: {h.totalEpinephrine || 0} • Shocks: {h.totalShocks || 0}
+                     </p>
+                   </div>
+                </div>
+                
+                <button 
+                  onClick={() => handleDeleteEntry(h.id)}
+                  className="absolute top-4 right-4 w-8 h-8 bg-red-600/10 text-red-500 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 active:scale-90 transition-all hover:bg-red-600 hover:text-white shadow-sm"
+                >
+                  <i className="fas fa-trash-alt text-xs"></i>
+                </button>
+
+                <details className="mt-2 group/logs">
+                  <summary className="text-[9px] font-black text-slate-500 uppercase cursor-pointer group-open/logs:mb-4 bg-slate-950/50 p-2 rounded-lg list-none flex items-center gap-2">
+                    <i className="fas fa-list-ul text-blue-500"></i> Full Code Log
+                  </summary>
+                  <div className="space-y-3 pl-3 border-l-2 border-slate-800 animate-in slide-in-from-top-2">
+                    {h.logs?.map((l: any, i: number) => (
+                      <div key={i} className="space-y-0.5 group/logentry relative">
+                        <div className="flex justify-between items-baseline pr-8">
+                          <p className="text-[10px] font-black text-slate-200 uppercase">{l.action}</p>
+                          <span className="text-[8px] font-mono text-slate-500">{l.timestamp}</span>
+                        </div>
+                        {l.details && <p className="text-[9px] text-slate-500 font-medium pr-8">{l.details}</p>}
+                        <button 
+                          onClick={() => handleDeleteLogEntry(h.id, i)}
+                          className="absolute right-0 top-0 w-6 h-6 rounded-md bg-red-600/10 text-red-500 flex items-center justify-center opacity-0 group-hover/logentry:opacity-100 transition-opacity"
+                        >
+                          <i className="fas fa-trash text-[8px]"></i>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              </div>
+            );
+          })}
+          {!loadingHistory && history.length === 0 && <p className="text-center text-slate-600 py-20 uppercase font-black text-[10px] tracking-widest col-span-2">No saved codes in cloud.</p>}
         </div>
       </div>
     );
@@ -188,7 +294,7 @@ const App: React.FC = () => {
           <button onClick={() => setShowInfo(true)} className="w-10 h-10 bg-slate-900/40 border border-slate-800/50 rounded-full flex items-center justify-center text-slate-600 active:bg-slate-800 md:w-12 md:h-12 hover:text-blue-500 transition-colors">
             <i className="fas fa-info-circle md:text-xl"></i>
           </button>
-          <button onClick={() => setActiveModule(ModuleType.SEARCH)} className="w-10 h-10 bg-slate-900 border border-slate-800 rounded-full flex items-center justify-center text-blue-500 active:bg-slate-800 shadow-lg md:w-12 md:h-12">
+          <button onClick={() => handleNavigate(ModuleType.SEARCH)} className="w-10 h-10 bg-slate-900 border border-slate-800 rounded-full flex items-center justify-center text-blue-500 active:bg-slate-800 shadow-lg md:w-12 md:h-12">
             <i className="fas fa-search md:text-xl"></i>
           </button>
           <button onClick={() => setActiveModule(ModuleType.HISTORY)} className="w-10 h-10 bg-slate-900 border border-slate-800 rounded-full flex items-center justify-center text-slate-400 active:bg-slate-800 md:w-12 md:h-12">
@@ -275,7 +381,7 @@ const App: React.FC = () => {
         <div className="p-6 border-t border-slate-800">
            <button onClick={() => setActiveModule(ModuleType.HISTORY)} className="w-full py-4 bg-slate-800 rounded-2xl flex items-center justify-center gap-3 text-slate-400 hover:text-white transition-colors">
               <i className="fas fa-history"></i>
-              <span className="font-black uppercase text-xs">Code History</span>
+              <span className="font-black uppercase text-xs">Cloud History</span>
            </button>
         </div>
       </aside>
@@ -310,7 +416,7 @@ const App: React.FC = () => {
         <button onClick={() => setActiveModule(ModuleType.ORTHO_MENU)} className={`flex flex-col items-center gap-1 transition-all ${activeModule === ModuleType.ORTHO_MENU || activeModule === ModuleType.ORTHO_GUIDE || activeModule === ModuleType.PDF_VIEWER ? 'text-orange-500 scale-110' : 'text-slate-600'}`}><i className="fas fa-bone text-lg"></i><span className="text-[8px] font-black uppercase">Ortho</span></button>
         <div className="relative -top-6"><button onClick={() => setActiveModule(ModuleType.CODE_BLUE)} className={`w-14 h-14 rounded-full flex items-center justify-center shadow-2xl transition-all active:scale-90 ${activeModule === ModuleType.CODE_BLUE ? 'bg-red-600 text-white' : 'bg-slate-900 border border-slate-800 text-red-500'}`}><i className="fas fa-bolt text-2xl"></i></button></div>
         <button onClick={() => setActiveModule(ModuleType.CALCULATORS)} className={`flex flex-col items-center gap-1 transition-all ${activeModule === ModuleType.CALCULATORS ? 'text-amber-500 scale-110' : 'text-slate-600'}`}><i className="fas fa-calculator text-lg"></i><span className="text-[8px] font-black uppercase">Calc</span></button>
-        <button onClick={() => setActiveModule(ModuleType.SEARCH)} className={`flex flex-col items-center gap-1 transition-all ${activeModule === ModuleType.SEARCH ? 'text-blue-500 scale-110' : 'text-slate-600'}`}><i className="fas fa-search text-lg"></i><span className="text-[8px] font-black uppercase">Search</span></button>
+        <button onClick={() => handleNavigate(ModuleType.SEARCH)} className={`flex flex-col items-center gap-1 transition-all ${activeModule === ModuleType.SEARCH ? 'text-blue-500 scale-110' : 'text-slate-600'}`}><i className="fas fa-search text-lg"></i><span className="text-[8px] font-black uppercase">Search</span></button>
       </nav>
     </div>
   );

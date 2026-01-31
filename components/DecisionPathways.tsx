@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useEffect } from 'react';
 import { PATHWAY_DATA } from '../constants';
 import { Pathway, FlowStep } from '../types';
@@ -30,8 +31,9 @@ const DecisionPathways: React.FC<Props> = ({ initialPathwayId, onDeepLinkUsed })
     return activePathway.steps.find(s => s.id === currentStepId);
   }, [activePathway, currentStepId]);
 
+  // Fix: Explicitly type acc and val as numbers to resolve the 'unknown' and 'unknown' type error in reduce
   const totalScore = useMemo(() => {
-    return Object.values(scoringSelections).reduce((acc, val) => acc + val, 0);
+    return Object.values(scoringSelections).reduce((acc: number, val: number) => acc + val, 0);
   }, [scoringSelections]);
 
   const selectPathway = (p: Pathway) => {

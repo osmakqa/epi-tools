@@ -1,6 +1,7 @@
-
 import React, { useState, useEffect } from 'react';
-import { LogEntry, CodeSession } from '../types';
+import { LogEntry } from '../types';
+import { db } from '../firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 
 interface Props {
   type: 'ACLS' | 'PALS' | 'EMERGENCY';
@@ -8,6 +9,10 @@ interface Props {
 }
 
 const RHYTHMS = ['VF', 'pVT', 'Asystole', 'PEA', 'SVT', 'Sinus Tach', 'Bradycardia'];
+const FINAL_RHYTHMS = [
+  'Sinus Rhythm', 'Sinus Tachycardia', 'Sinus Bradycardia', 
+  'AF in CVR', 'AF in RVR', 'Sinus Arrhythmia', 'Expired'
+];
 const MEDS_EVENTS = [
   'Amiodarone 300mg', 'Amiodarone 150mg', 'Lidocaine 100mg', 'Lidocaine 50mg',
   'Magnesium 2g', 'Bicarbonate 50mEq', 'Calcium Gluconate 1g', 'D50W 50mL',
@@ -22,8 +27,17 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
   const [isActive, setIsActive] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [showRhythmPicker, setShowRhythmPicker] = useState<null | 'CHECK' | 'SHOCK'>(null);
+  const [showFinalRhythmPicker, setShowFinalRhythmPicker] = useState(false);
   const [showMedsMenu, setShowMedsMenu] = useState(false);
   const [shockConfig, setShockConfig] = useState({ joules: 200, wave: 'Biphasic' });
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Summary counts
+  const [epiCount, setEpiCount] = useState(0);
+  const [shockCount, setShockCount] = useState(0);
+  const [startTime, setStartTime] = useState<Date | null>(null);
+  const [stopTime, setStopTime] = useState<Date | null>(null);
+  const [finalRhythm, setFinalRhythm] = useState<string>("");
 
   useEffect(() => {
     let interval: any = null;
@@ -39,12 +53,43 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
 
   const addLog = (action: string, details?: string) => {
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setLogs(prev => [...prev, { timestamp: time, action, details }]);
+    setLogs(prev => [...prev, { timestamp: time, action, details: details || "" }]);
+  };
+
+  const removeLog = (index: number) => {
+    setLogs(prev => prev.filter((_, i) => i !== index));
   };
 
   const startCode = () => {
+    const now = new Date();
+    setStartTime(now);
+    setStopTime(null);
     setIsActive(true);
+    setTotalSeconds(0);
+    setEpiSeconds(0);
+    setCycleSeconds(0);
+    setEpiCount(0);
+    setShockCount(0);
+    setLogs([]);
     addLog(`Code Started`, `Type: ${type}`);
+  };
+
+  const stopCode = () => {
+    setIsActive(false);
+    setStopTime(new Date());
+    setShowFinalRhythmPicker(true);
+  };
+
+  const cancelStopCode = () => {
+    setIsActive(true);
+    setStopTime(null);
+    setShowFinalRhythmPicker(false);
+  };
+
+  const handleFinalRhythm = (rhythm: string) => {
+    setFinalRhythm(rhythm);
+    addLog('Code Stopped', `Final Rhythm: ${rhythm}`);
+    setShowFinalRhythmPicker(false);
   };
 
   const selectRhythm = (rhythm: string) => {
@@ -52,28 +97,55 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
       addLog('Pulse/Rhythm Check', rhythm);
       setCycleSeconds(0);
     } else if (showRhythmPicker === 'SHOCK') {
+      setShockCount(prev => prev + 1);
       addLog('Shock Delivered', `${shockConfig.joules}J (${shockConfig.wave}) - Rhythm: ${rhythm}`);
     }
     setShowRhythmPicker(null);
   };
 
+  const handleEpiClick = () => {
+    if (!isActive) return;
+    setEpiSeconds(0);
+    setEpiCount(prev => prev + 1);
+    addLog('Epinephrine Given', `Total doses: ${epiCount + 1}`);
+  };
+
   const selectMedEvent = (item: string) => {
     addLog('Event/Medication', item);
-    if (item === 'ROSC' || item === 'Termination') setIsActive(false);
+    if (item === 'ROSC' || item === 'Termination') stopCode();
     setShowMedsMenu(false);
   };
 
-  const saveToHistory = () => {
-    const session: CodeSession = {
-      id: Date.now().toString(),
-      type,
-      startTime: new Date().toISOString(),
-      duration: formatTime(totalSeconds),
-      logs
-    };
-    const history = JSON.parse(localStorage.getItem('code_history') || '[]');
-    localStorage.setItem('code_history', JSON.stringify([session, ...history].slice(0, 20)));
-    onClose();
+  const saveToHistory = async () => {
+    setIsSaving(true);
+    try {
+      const sanitizedLogs = logs.map(log => ({
+        timestamp: log.timestamp,
+        action: log.action,
+        details: log.details || ""
+      }));
+
+      const session = {
+        type,
+        startTime: startTime?.toISOString() || new Date().toISOString(),
+        stopTime: stopTime?.toISOString() || "",
+        totalEpinephrine: epiCount,
+        totalShocks: shockCount,
+        totalMinutes: Math.floor(totalSeconds / 60),
+        finalRhythm: finalRhythm,
+        createdAt: serverTimestamp(),
+        duration: formatTime(totalSeconds),
+        logs: sanitizedLogs
+      };
+
+      await addDoc(collection(db, 'code_history'), session);
+      onClose();
+    } catch (error: any) {
+      console.error("Firestore Error:", error);
+      alert("Failed to save to cloud: " + error.message);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const formatTime = (sec: number) => {
@@ -99,24 +171,38 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest md:text-sm">Total Time</span>
             <div className="text-4xl font-mono font-bold text-slate-200 md:text-7xl">{formatTime(totalSeconds)}</div>
           </div>
-          <div className={`p-4 rounded-2xl border text-center transition-all md:p-8 md:rounded-[32px] ${epiSeconds > 180 ? 'bg-red-950 border-red-500 animate-pulse' : 'bg-slate-900 border-slate-800'}`}>
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest md:text-sm">Epi (3-5m)</span>
-            <div className="text-4xl font-mono font-bold md:text-7xl">{formatTime(epiSeconds)}</div>
-          </div>
+          <button 
+            onClick={handleEpiClick}
+            disabled={!isActive}
+            className={`p-4 rounded-2xl border text-center transition-all md:p-8 md:rounded-[32px] cursor-pointer active:scale-95 ${!isActive ? 'bg-slate-900 border-slate-800 opacity-50' : epiSeconds > 180 ? 'bg-red-950 border-red-500 animate-pulse' : 'bg-slate-900 border-slate-800 hover:border-blue-500'}`}
+          >
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest md:text-sm flex flex-col">
+              <span>Epi (3-5m)</span>
+              {isActive && <span className="text-blue-500 text-[8px] animate-pulse">(Tap to Log)</span>}
+            </span>
+            <div className={`text-4xl font-mono font-bold md:text-7xl ${epiSeconds > 180 ? 'text-red-500' : 'text-slate-200'}`}>{formatTime(epiSeconds)}</div>
+            {epiCount > 0 && <span className="text-[10px] font-black text-blue-400 uppercase mt-1">Doses: {epiCount}</span>}
+          </button>
         </div>
 
         <button 
           onClick={() => setShowRhythmPicker('CHECK')}
-          className={`w-full p-5 rounded-2xl border-2 font-black text-xl transition-all md:p-10 md:rounded-[40px] md:text-4xl ${cycleSeconds > 120 ? 'bg-orange-600 border-orange-400 text-white' : 'bg-slate-900 border-slate-800 text-slate-300'}`}
+          disabled={!isActive}
+          className={`w-full p-5 rounded-2xl border-2 font-black text-xl transition-all md:p-10 md:rounded-[40px] md:text-4xl ${!isActive ? 'bg-slate-900 border-slate-800 text-slate-700 opacity-50' : cycleSeconds > 120 ? 'bg-orange-600 border-orange-400 text-white' : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-orange-500'}`}
         >
-          {cycleSeconds > 120 ? 'TIME TO CHECK PULSE' : `CYCLE: ${formatTime(cycleSeconds)}`}
+          {!isActive ? 'CODE STOPPED' : cycleSeconds > 120 ? (
+            <div className="flex flex-col items-center">
+              <span className="animate-pulse">TIME TO CHECK PULSE</span>
+              <span className="text-sm font-mono opacity-80">OVERDUE: {formatTime(cycleSeconds - 120)}</span>
+            </div>
+          ) : `CYCLE: ${formatTime(cycleSeconds)}`}
         </button>
 
-        {!isActive ? (
+        {!isActive && !stopTime ? (
           <button onClick={startCode} className="w-full bg-red-600 text-white py-8 rounded-3xl text-3xl font-black shadow-2xl shadow-red-600/20 active:scale-95 transition-transform md:py-16 md:text-5xl md:rounded-[48px]">
             START CODE
           </button>
-        ) : (
+        ) : isActive ? (
           <div className="grid grid-cols-2 gap-4 md:grid-cols-4 md:gap-6">
             <div className="col-span-2 bg-slate-900 p-4 rounded-2xl border border-slate-800 space-y-4 md:col-span-2 md:row-span-2 md:p-8 md:rounded-[32px] md:space-y-8">
               <div className="flex justify-between items-center text-xs font-bold text-slate-500 md:text-base">
@@ -154,38 +240,93 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
               <button onClick={() => setShowRhythmPicker('SHOCK')} className="w-full bg-red-600 text-white py-4 rounded-xl font-black text-xl shadow-lg active:scale-95 transition-all uppercase tracking-tight md:py-8 md:text-3xl md:rounded-3xl">Perform Shock</button>
             </div>
 
-            <button onClick={() => { setEpiSeconds(0); addLog('Epi Given'); }} className="bg-emerald-600 text-white py-6 rounded-2xl font-black shadow-lg active:scale-95 transition-all md:h-full md:text-2xl md:rounded-[32px]">DRUGS (EPI)</button>
-            <button onClick={() => setShowMedsMenu(true)} className="bg-slate-800 text-slate-300 py-6 rounded-2xl font-black border border-slate-700 active:scale-95 transition-all md:h-full md:text-2xl md:rounded-[32px]">MEDS / EVENT</button>
-            <button onClick={() => { setIsActive(false); addLog('Code Stopped'); }} className="col-span-2 bg-slate-200 text-slate-950 py-4 rounded-2xl font-black shadow-md active:scale-95 transition-all md:text-2xl md:rounded-3xl">STOP CODE</button>
+            <button onClick={() => setShowMedsMenu(true)} className="col-span-2 bg-slate-800 text-slate-300 py-8 rounded-2xl font-black border border-slate-700 active:scale-95 transition-all md:h-full md:text-2xl md:rounded-[32px] uppercase">Other Meds / Event</button>
+            <button onClick={stopCode} className="col-span-2 bg-slate-200 text-slate-950 py-4 rounded-2xl font-black shadow-md active:scale-95 transition-all md:text-2xl md:rounded-3xl">STOP CODE</button>
+          </div>
+        ) : (
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 animate-in zoom-in-95">
+             <h3 className="text-sm font-black text-blue-500 uppercase tracking-widest border-b border-slate-800 pb-2">Session Summary</h3>
+             <div className="grid grid-cols-2 gap-4">
+                <SummaryStat label="Start Time" value={startTime?.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) || "--"} />
+                <SummaryStat label="Stop Time" value={stopTime?.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) || "--"} />
+                <SummaryStat label="Total Epi" value={`${epiCount} Doses`} />
+                <SummaryStat label="Total Shocks" value={`${shockCount} Shocks`} />
+                <SummaryStat label="Final Rhythm" value={finalRhythm || "Not Set"} />
+                <SummaryStat label="Total Minutes" value={`${Math.floor(totalSeconds / 60)} min`} />
+             </div>
+             <div className="flex gap-3 mt-4">
+               <button onClick={startCode} className="flex-1 bg-slate-800 text-slate-300 py-3 rounded-xl font-bold uppercase text-xs">Reset Tracker</button>
+               <button 
+                 onClick={saveToHistory} 
+                 disabled={isSaving}
+                 className={`flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold uppercase text-xs shadow-lg shadow-blue-600/20 ${isSaving ? 'opacity-50' : ''}`}
+               >
+                 {isSaving ? 'Saving...' : 'Save to Cloud'}
+               </button>
+             </div>
           </div>
         )}
 
         <div className="bg-slate-900 rounded-2xl p-4 border border-slate-800 shadow-inner md:p-8 md:rounded-[32px]">
           <h3 className="text-xs font-black text-slate-500 uppercase mb-3 md:text-sm md:mb-6">Live Session Log</h3>
           <div className="space-y-3 max-h-60 overflow-y-auto pr-1 custom-scrollbar md:max-h-96">
-            {logs.slice().reverse().map((l, i) => (
-              <div key={i} className="flex gap-4 items-start border-l-2 border-red-500/20 pl-4 py-1 md:py-3 md:pl-8">
-                <span className="font-mono text-red-500 text-[10px] font-bold shrink-0 md:text-sm">{l.timestamp}</span>
-                <div>
-                  <p className="text-sm font-bold text-slate-200 uppercase md:text-lg">{l.action}</p>
-                  {l.details && <p className="text-xs text-slate-500 md:text-sm">{l.details}</p>}
+            {logs.slice().reverse().map((l, i) => {
+              const actualIndex = logs.length - 1 - i;
+              return (
+                <div key={actualIndex} className="flex gap-4 items-start border-l-2 border-red-500/20 pl-4 py-1 md:py-3 md:pl-8 group">
+                  <span className="font-mono text-red-500 text-[10px] font-bold shrink-0 md:text-sm">{l.timestamp}</span>
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-slate-200 uppercase md:text-lg">{l.action}</p>
+                    {l.details && <p className="text-xs text-slate-500 md:text-sm">{l.details}</p>}
+                  </div>
+                  <button 
+                    onClick={() => removeLog(actualIndex)}
+                    className="w-8 h-8 rounded-lg bg-red-600/10 text-red-500 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  >
+                    <i className="fas fa-trash-alt text-xs"></i>
+                  </button>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
-
-        {!isActive && totalSeconds > 0 && (
-          <button onClick={saveToHistory} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black shadow-xl shadow-blue-600/20 md:py-8 md:text-2xl md:rounded-3xl">SAVE TO HISTORY</button>
-        )}
       </div>
+
+      {/* FINAL RHYTHM PICKER */}
+      {showFinalRhythmPicker && (
+        <div className="fixed inset-0 bg-black/95 z-[70] flex items-center justify-center p-6">
+          <div className="bg-slate-900 w-full max-w-sm rounded-[40px] p-8 border border-slate-800 space-y-6 shadow-2xl relative">
+            <button 
+              onClick={cancelStopCode}
+              className="absolute top-6 right-6 w-10 h-10 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center hover:text-white"
+            >
+              <i className="fas fa-times"></i>
+            </button>
+            <div className="text-center">
+              <h3 className="text-xl font-black text-white uppercase tracking-tight">Final Rhythm</h3>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Select code outcome rhythm</p>
+            </div>
+            <div className="grid gap-2">
+              {FINAL_RHYTHMS.map(r => (
+                <button 
+                  key={r} 
+                  onClick={() => handleFinalRhythm(r)}
+                  className="w-full py-4 bg-slate-800 border border-slate-700/50 rounded-2xl text-slate-200 font-bold uppercase text-xs hover:bg-slate-700 active:scale-95 transition-all"
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* RHYTHM PICKER MODAL */}
       {showRhythmPicker && (
         <div className="fixed inset-0 bg-black/90 z-[60] flex items-end md:items-center md:justify-center">
           <div className="bg-slate-900 w-full rounded-t-[32px] p-6 space-y-4 shadow-2xl animate-in slide-in-from-bottom duration-300 md:max-w-xl md:rounded-[40px] md:p-10">
             <div className="flex justify-between items-center mb-2">
-              <h3 className="text-xl font-black text-slate-200 md:text-3xl">SELECT RHYTHM</h3>
+              <h3 className="text-xl font-black text-slate-200 md:text-3xl uppercase">Select Rhythm</h3>
               <button onClick={() => setShowRhythmPicker(null)} className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-800 text-slate-400">
                 <i className="fas fa-times"></i>
               </button>
@@ -204,7 +345,7 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
         <div className="fixed inset-0 bg-black/90 z-[60] flex items-end md:items-center md:justify-center">
           <div className="bg-slate-900 w-full max-h-[80vh] rounded-t-[32px] p-6 flex flex-col shadow-2xl animate-in slide-in-from-bottom duration-300 md:max-w-2xl md:rounded-[40px] md:p-10 md:max-h-[70vh]">
             <div className="flex justify-between items-center mb-4 shrink-0">
-              <h3 className="text-xl font-black text-slate-200 md:text-3xl">LOG MEDS / EVENT</h3>
+              <h3 className="text-xl font-black text-slate-200 md:text-3xl uppercase">Other Meds / Event</h3>
               <button onClick={() => setShowMedsMenu(false)} className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-800 text-slate-400">
                 <i className="fas fa-times"></i>
               </button>
@@ -227,5 +368,12 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
     </div>
   );
 };
+
+const SummaryStat: React.FC<{ label: string; value: string | number }> = ({ label, value }) => (
+  <div>
+    <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest">{label}</p>
+    <p className="text-sm font-bold text-slate-200 uppercase">{value}</p>
+  </div>
+);
 
 export default CodeBlueTracker;
