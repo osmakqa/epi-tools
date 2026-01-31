@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LogEntry } from '../types';
 import { db } from '../firebase';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
@@ -25,6 +25,7 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
   const [epiSeconds, setEpiSeconds] = useState(0);
   const [cycleSeconds, setCycleSeconds] = useState(0);
   const [isActive, setIsActive] = useState(false);
+  const [isMetronomeEnabled, setIsMetronomeEnabled] = useState(true);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [showRhythmPicker, setShowRhythmPicker] = useState<null | 'CHECK' | 'SHOCK'>(null);
   const [showFinalRhythmPicker, setShowFinalRhythmPicker] = useState(false);
@@ -39,6 +40,12 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
   const [stopTime, setStopTime] = useState<Date | null>(null);
   const [finalRhythm, setFinalRhythm] = useState<string>("");
 
+  // Metronome Refs
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const nextTickTimeRef = useRef<number>(0);
+  const metronomeIntervalRef = useRef<number | null>(null);
+
+  // General Resuscitation Timer
   useEffect(() => {
     let interval: any = null;
     if (isActive) {
@@ -50,6 +57,56 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
     }
     return () => clearInterval(interval);
   }, [isActive]);
+
+  // Metronome Sound Engine
+  useEffect(() => {
+    if (isActive && isMetronomeEnabled) {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      nextTickTimeRef.current = ctx.currentTime;
+      
+      const scheduleNextTick = () => {
+        // Schedule sounds in advance for precision
+        while (nextTickTimeRef.current < ctx.currentTime + 0.1) {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(880, nextTickTimeRef.current); // A5 note
+          
+          gain.gain.setValueAtTime(0.1, nextTickTimeRef.current);
+          gain.gain.exponentialRampToValueAtTime(0.001, nextTickTimeRef.current + 0.05);
+          
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          
+          osc.start(nextTickTimeRef.current);
+          osc.stop(nextTickTimeRef.current + 0.05);
+          
+          // 120 BPM = 2 Hz = 0.5 seconds per tick
+          nextTickTimeRef.current += 0.5;
+        }
+      };
+
+      metronomeIntervalRef.current = window.setInterval(scheduleNextTick, 25);
+    } else {
+      if (metronomeIntervalRef.current) {
+        clearInterval(metronomeIntervalRef.current);
+        metronomeIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (metronomeIntervalRef.current) clearInterval(metronomeIntervalRef.current);
+    };
+  }, [isActive, isMetronomeEnabled]);
 
   const addLog = (action: string, details?: string) => {
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -72,6 +129,9 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
     setShockCount(0);
     setLogs([]);
     addLog(`Code Started`, `Type: ${type}`);
+    
+    // Resume audio context on user gesture
+    if (audioCtxRef.current) audioCtxRef.current.resume();
   };
 
   const stopCode = () => {
@@ -159,10 +219,29 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
   return (
     <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col font-sans md:relative md:h-full md:inset-auto md:bg-transparent">
       <div className="bg-red-900/40 border-b border-red-500/30 p-4 flex justify-between items-center shrink-0 md:bg-red-600/10 md:rounded-t-3xl">
-        <h2 className="text-xl font-black tracking-tight text-red-500">{type} TRACKER</h2>
-        <button onClick={onClose} className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-900 text-slate-400 md:hidden">
-          <i className="fas fa-times"></i>
-        </button>
+        <div className="flex flex-col">
+          <h2 className="text-xl font-black tracking-tight text-red-500">{type} TRACKER</h2>
+          {isActive && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="w-2 h-2 bg-red-500 rounded-full animate-ping"></span>
+              <span className="text-[10px] font-black text-red-400 uppercase tracking-widest">Live Session</span>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {isActive && (
+             <button 
+               onClick={() => setIsMetronomeEnabled(!isMetronomeEnabled)}
+               className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${isMetronomeEnabled ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-800 text-slate-500'}`}
+               title="Toggle CPR Metronome (120 BPM)"
+             >
+               <i className={`fas ${isMetronomeEnabled ? 'fa-volume-high' : 'fa-volume-mute'}`}></i>
+             </button>
+          )}
+          <button onClick={onClose} className="w-10 h-10 flex items-center justify-center rounded-full bg-slate-900 text-slate-400 md:hidden">
+            <i className="fas fa-times"></i>
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 pb-24 md:pb-8 md:max-w-4xl md:mx-auto md:w-full">
@@ -245,7 +324,10 @@ const CodeBlueTracker: React.FC<Props> = ({ type, onClose }) => {
           </div>
         ) : (
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 animate-in zoom-in-95">
-             <h3 className="text-sm font-black text-blue-500 uppercase tracking-widest border-b border-slate-800 pb-2">Session Summary</h3>
+             <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                <h3 className="text-sm font-black text-blue-500 uppercase tracking-widest">Session Summary</h3>
+                <span className="text-[10px] font-black text-slate-600 uppercase">{type} RESUS</span>
+             </div>
              <div className="grid grid-cols-2 gap-4">
                 <SummaryStat label="Start Time" value={startTime?.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) || "--"} />
                 <SummaryStat label="Stop Time" value={stopTime?.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) || "--"} />
